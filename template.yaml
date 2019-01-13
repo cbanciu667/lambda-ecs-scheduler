@@ -1,0 +1,109 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  AWS CloudFormation template to gracefully stop services and nodes on an ECS cluster
+
+Globals:
+    Function:
+        Timeout: 30
+
+Resources:
+
+  SNSLambdaRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "autoscaling.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AutoScalingNotificationAccessRole
+      Path: "/"
+
+  LambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Policies:
+        -
+          PolicyName: "lambda-inline"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                - autoscaling:*
+                - ecs:*
+                - dynamodb:*
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+                - sns:Publish
+                Resource: "*"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AutoScalingNotificationAccessRole
+      Path: "/"
+
+  ECSSNSTopic:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      Subscription:
+        -
+          Endpoint:
+             Fn::GetAtt:
+                - "LambdaFunctionECSScheduler"
+                - "Arn"
+          Protocol: "lambda"
+    DependsOn: "LambdaFunctionECSScheduler"
+
+  LambdaFunctionECSScheduler:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Gracefully stop tasks on ECS clusters and after stop ECS nodes.
+      CodeUri: ecs-scheduler/
+      Handler: app.lambda_handler
+      Runtime: python3.7
+      Environment: # More info about Env Vars: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#environment-object
+        Variables:
+          PARAM1: VALUE
+      Role: !GetAtt LambdaExecutionRole.Arn
+      MemorySize: 128
+      Timeout: 300
+
+  LambdaInvokePermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+       FunctionName: !Ref LambdaFunctionECSScheduler
+       Action: lambda:InvokeFunction
+       Principal: "sns.amazonaws.com"
+       SourceArn: !Ref ECSSNSTopic
+
+  LambdaSubscriptionToSNSTopic:
+    Type: AWS::SNS::Subscription
+    Properties:
+       Endpoint:
+          Fn::GetAtt:
+             - "LambdaFunctionECSScheduler"
+             - "Arn"
+       Protocol: 'lambda'
+       TopicArn: !Ref ECSSNSTopic
+
+Outputs:
+  SNSTopicForECS:
+    Description: Topic used by ECS to send notifications when instance state is changing
+    Value: !Ref ECSSNSTopic

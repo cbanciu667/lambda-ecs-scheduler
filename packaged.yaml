@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS CloudFormation template to gracefully stop services and nodes on
+  an ECS cluster
+
+  '
+Globals:
+  Function:
+    Timeout: 30
+Outputs:
+  SNSTopicForECS:
+    Description: Topic used by ECS to send notifications when instance state is changing
+    Value:
+      Ref: ECSSNSTopic
+Resources:
+  ECSSNSTopic:
+    DependsOn: LambdaFunctionECSScheduler
+    Properties:
+      Subscription:
+      - Endpoint:
+          Fn::GetAtt:
+          - LambdaFunctionECSScheduler
+          - Arn
+        Protocol: lambda
+    Type: AWS::SNS::Topic
+  LambdaExecutionRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AutoScalingNotificationAccessRole
+      Path: /
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - autoscaling:*
+            - ecs:*
+            - dynamodb:*
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            - sns:Publish
+            Effect: Allow
+            Resource: '*'
+          Version: '2012-10-17'
+        PolicyName: lambda-inline
+    Type: AWS::IAM::Role
+  LambdaFunctionECSScheduler:
+    Properties:
+      CodeUri: s3://ecs-scheduler/2b86f6a89a0b7b08442e08930d4c9d0f
+      Description: Gracefully stop tasks on ECS clusters and after stop ECS nodes.
+      Environment:
+        Variables:
+          PARAM1: VALUE
+      Handler: app.lambda_handler
+      MemorySize: 128
+      Role:
+        Fn::GetAtt:
+        - LambdaExecutionRole
+        - Arn
+      Runtime: python3.7
+      Timeout: 300
+    Type: AWS::Serverless::Function
+  LambdaInvokePermission:
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName:
+        Ref: LambdaFunctionECSScheduler
+      Principal: sns.amazonaws.com
+      SourceArn:
+        Ref: ECSSNSTopic
+    Type: AWS::Lambda::Permission
+  LambdaSubscriptionToSNSTopic:
+    Properties:
+      Endpoint:
+        Fn::GetAtt:
+        - LambdaFunctionECSScheduler
+        - Arn
+      Protocol: lambda
+      TopicArn:
+        Ref: ECSSNSTopic
+    Type: AWS::SNS::Subscription
+  SNSLambdaRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - autoscaling.amazonaws.com
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AutoScalingNotificationAccessRole
+      Path: /
+    Type: AWS::IAM::Role
+Transform: AWS::Serverless-2016-10-31
